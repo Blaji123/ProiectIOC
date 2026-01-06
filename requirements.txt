@@ -1,0 +1,4 @@
+pygame
+pyttsx3
+gtts
+playsound
