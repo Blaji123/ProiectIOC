@@ -41,10 +41,16 @@ class Game:
         self.screen = screen
         self.clock = pygame.time.Clock()
         self.running = True
+        self.state = "INTRO" # INTRO, PLAYING, SUCCESS
+        self.intro_audio_played = False
+        self.success_audio_played = False
+        
         try:
             self.font = pygame.font.SysFont('Comic Sans MS', 42, bold=True)
+            self.story_font = pygame.font.SysFont('Comic Sans MS', 28)
         except:
             self.font = pygame.font.Font(None, 48)
+            self.story_font = pygame.font.Font(None, 32)
         
         # Text-to-Speech Manager
         self.tts = TTSManager()
@@ -59,6 +65,13 @@ class Game:
             "Felicitări! Nivel Complet!",
             "Cuvântul nu este complet, mai încearcă"
         ])
+        
+        # Intro and Outro text
+        self.intro_text = "Salutare, micule constructor! Bine ai venit pe Șantierul Cuvintelor. Aici, literele sunt ca niște cărămizi, iar noi avem nevoie de ajutorul tău pentru a construi cuvinte puternice. Ești gata să pornim macaraua și să asamblăm cuvinte? Haide să începem!"
+        self.outro_text = "Felicitări, Maestre Constructor! Ai terminat toate nivelurile cu succes. Șantierul Cuvintelor arată minunat datorită ție. Ești un adevărat campion al literelor!"
+        
+        preload_list.append(self.intro_text)
+        preload_list.append(self.outro_text)
         
         # Level specific content
         for level in LEVELS:
@@ -110,9 +123,13 @@ class Game:
                  print(f"Failed to load {filename}.png: {e}")
             
         # UI Elements
-        # The 'Asambleaza' button is removed as per user request
         self.speaker_btn = SpeakerButton(SCREEN_WIDTH - 320, 500, 60, "speak_word")
         self.next_level_btn = Button("Următorul Nivel", SCREEN_WIDTH - 250, 500, 220, 50, ORANGE, "next_level")
+        
+        # Intro/Outro Buttons
+        self.start_btn = Button("START", SCREEN_WIDTH // 2 - 100, SCREEN_HEIGHT - 150, 200, 80, GREEN, "start_game")
+        self.quit_btn = Button("IEȘIRE", SCREEN_WIDTH // 2 - 100, SCREEN_HEIGHT - 150, 200, 80, RED, "quit_game")
+
         self.buttons = pygame.sprite.Group(self.speaker_btn, self.next_level_btn)
         
         # Robotic Arm
@@ -125,7 +142,8 @@ class Game:
     def setup_level(self, level_index):
         if level_index >= len(LEVELS):
             print("All levels completed!")
-            self.running = False
+            self.state = "SUCCESS"
+            self.success_audio_played = False
             return
 
         level_config = LEVELS[level_index]
@@ -228,7 +246,8 @@ class Game:
         self.arm.release_wagon()
         
         # Initial instruction
-        pygame.time.set_timer(pygame.USEREVENT + 1, 1000, 1)
+        if not self.state == "INTRO":
+            pygame.time.set_timer(pygame.USEREVENT + 1, 1000, 1)
         
         # Randomize Level Image Position
         # Safe zones: Left (150, 315), Center (400, 315), Right (650, 315)
@@ -241,55 +260,17 @@ class Game:
             if event.type == pygame.QUIT:
                 self.running = False
             
-            if event.type == pygame.USEREVENT + 1:
-                # Initial instruction
-                if self.current_level_index == 0:
-                     self.tts.speak_instruction(f"Da click pe litere in ordine si construieste cuvantul {self.target_word}")
-                else:
-                    self.tts.speak_instruction(f"Nivelul {self.current_level_index + 1}. Construiește cuvântul {self.target_word}")
-            
-            if event.type == pygame.MOUSEBUTTONDOWN:
-                if event.button == 1:
-                    # Check button clicks
-                    button_clicked = False
-                    for btn in self.buttons:
-                        action = btn.check_click(event.pos)
-                        if action == "next_level":
-                            if self.next_level_btn.enabled:
-                                self.current_level_index += 1
-                                self.setup_level(self.current_level_index)
-                            else:
-                                print("Next level button disabled clicked")
-                                self.message = "Cuvântul nu este complet!"
-                                self.message_color = RED
-                                self.tts.speak("Cuvântul nu este complet, mai încearcă")
-
-                            button_clicked = True
-                            break
-                        elif action == "speak_word":
-                            print(f"Speaker button clicked! Speaking: {self.target_word}")
-                            self.message = f"Ascultă: {self.target_word}"
-                            self.message_color = (100, 150, 255)
-                            self.tts.speak_word(self.target_word)
-                            button_clicked = True
-                            break
-                    
-                    if button_clicked:
-                        continue
-                    
-                    # Check if clicking on a wagon
-                    if self.arm.state == "idle" and not self.arm.held_wagon:
-                        for wagon in self.wagons:
-                            # Allow picking up if arrived (or close enough for raining?)
-                            # For raining, let's say they can be picked up if they are visible
-                            if wagon.rect.collidepoint(event.pos) and (wagon.arrived or self.current_level_config["spawn_mode"] == "raining") and wagon.current_slot is None:
-                                self.start_wagon_pickup(wagon)
-                                self.tts.speak_letter(wagon.letter)
-                                break
-                            
-        self.wagons.update(events)
-        self.update_arm_state()
-        self.arm.update() 
+            if self.state == "INTRO":
+                self.handle_intro_events(event)
+            elif self.state == "SUCCESS":
+                self.handle_success_events(event)
+            elif self.state == "PLAYING":
+                self.handle_game_event(event)
+                
+        if self.state == "PLAYING":
+            self.wagons.update(events)
+            self.update_arm_state()
+            self.arm.update() 
     
     # ... rest of file logic implies start_wagon_pickup is next ...
 
@@ -380,9 +361,8 @@ class Game:
                         self.message_color = (255, 165, 0)
                         self.tts.speak(f"Felicitări! Cuvântul {self.target_word} este complet!")
                         
-                        # Show Next Level Button ONLY if not last level
-                        if self.current_level_index < len(LEVELS) - 1:
-                            self.next_level_btn.set_enabled(True)
+                        # Show Next Level Button
+                        self.next_level_btn.set_enabled(True)
                             
                         # self.buttons.remove(self.assemble_btn) # Removed
                     else:
@@ -443,20 +423,122 @@ class Game:
             self.screen.blit(self.background, (0, 0))
         else:
             self.screen.fill(WHITE)
+            
+        if self.state == "INTRO":
+            self.draw_intro()
+        elif self.state == "SUCCESS":
+            self.draw_success()
+        elif self.state == "PLAYING":
+            self.draw_game()
+            
+        pygame.display.flip()
+
+    def run(self):
+        while self.running:
+            self.handle_events()
+            self.draw()
+            self.clock.tick(FPS)
+
+    def handle_intro_events(self, event):
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button == 1:
+                action = self.start_btn.check_click(event.pos)
+                if action == "start_game":
+                    self.state = "PLAYING"
+                    self.tts.speak_instruction(f"Da click pe litere in ordine si construieste cuvantul {self.target_word}")
+    
+    def handle_success_events(self, event):
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button == 1:
+                action = self.quit_btn.check_click(event.pos)
+                if action == "quit_game":
+                    self.running = False
+
+    def handle_game_event(self, event):
+        if event.type == pygame.USEREVENT + 1:
+            # Initial instruction
+            if self.current_level_index == 0:
+                    self.tts.speak_instruction(f"Da click pe litere in ordine si construieste cuvantul {self.target_word}")
+            else:
+                self.tts.speak_instruction(f"Nivelul {self.current_level_index + 1}. Construiește cuvântul {self.target_word}")
         
-        # Draw Conveyor Belt only if conveyor mode
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button == 1:
+                # Check button clicks
+                button_clicked = False
+                for btn in self.buttons:
+                    action = btn.check_click(event.pos)
+                    if action == "next_level":
+                        if self.next_level_btn.enabled:
+                            self.current_level_index += 1
+                            self.setup_level(self.current_level_index)
+                        else:
+                            print("Next level button disabled clicked")
+                            self.message = "Cuvântul nu este complet!"
+                            self.message_color = RED
+                            self.tts.speak("Cuvântul nu este complet, mai încearcă")
+
+                        button_clicked = True
+                        break
+                    elif action == "speak_word":
+                        print(f"Speaker button clicked! Speaking: {self.target_word}")
+                        self.message = f"Ascultă: {self.target_word}"
+                        self.message_color = (100, 150, 255)
+                        self.tts.speak_word(self.target_word)
+                        button_clicked = True
+                        break
+                
+                if button_clicked:
+                    return
+                
+                # Check if clicking on a wagon
+                if self.arm.state == "idle" and not self.arm.held_wagon:
+                    for wagon in self.wagons:
+                        # Allow picking up if arrived (or close enough for raining?)
+                        # For raining, let's say they can be picked up if they are visible
+                        if wagon.rect.collidepoint(event.pos) and (wagon.arrived or self.current_level_config["spawn_mode"] == "raining") and wagon.current_slot is None:
+                            self.start_wagon_pickup(wagon)
+                            self.tts.speak_letter(wagon.letter)
+                            break
+
+    def draw_intro(self):
+        if not self.intro_audio_played:
+            self.tts.speak(self.intro_text)
+            self.intro_audio_played = True
+            
+        # Background fallback if needed but main draw handles clear
+        
+        # Draw Title
+        title_surf = self.font.render("Șantierul Cuvintelor", True, BLUE)
+        title_rect = title_surf.get_rect(center=(SCREEN_WIDTH // 2, 100))
+        self.screen.blit(title_surf, title_rect)
+        
+        # Draw Story
+        self.draw_multiline_text(self.intro_text, SCREEN_WIDTH // 2, 200, SCREEN_WIDTH - 100, self.story_font, BLACK)
+        
+        # Draw Button
+        self.screen.blit(self.start_btn.image, self.start_btn.rect)
+        
+    def draw_success(self):
+        if not self.success_audio_played:
+            self.tts.speak(self.outro_text)
+            self.success_audio_played = True
+            
+        title_surf = self.font.render("Felicitări!", True, ORANGE)
+        title_rect = title_surf.get_rect(center=(SCREEN_WIDTH // 2, 100))
+        self.screen.blit(title_surf, title_rect)
+        
+        self.draw_multiline_text(self.outro_text, SCREEN_WIDTH // 2, 250, SCREEN_WIDTH - 100, self.story_font, BLACK)
+        
+        self.screen.blit(self.quit_btn.image, self.quit_btn.rect)
+
+    def draw_game(self):
         if self.current_level_config["spawn_mode"] == "conveyor":
              pygame.draw.rect(self.screen, GRAY, (0, CONVEYOR_Y + WAGON_HEIGHT, SCREEN_WIDTH, 20))
         else:
-            # Maybe draw ground for raining mode?
              pygame.draw.rect(self.screen, (100, 200, 100), (0, CONVEYOR_Y + WAGON_HEIGHT, SCREEN_WIDTH, 20))
         
         self.slots.draw(self.screen)
-        
-        # Draw Pre-filled slots letter (if any dummy wagons are there, they are drawn in next loop? No because they are in slots?)
-        # Wait, if I added them to self.slots.occupied_by but NOT to self.wagons?
-        # The pre-filled logic created a Wagon but didn't add it to self.wagons group?
-        # I need to draw them.
         
         for slot in self.slot_list:
             if slot.occupied_by and slot.occupied_by not in self.wagons and slot.occupied_by != self.arm.held_wagon:
@@ -473,7 +555,6 @@ class Game:
         
         self.buttons.draw(self.screen)
         
-        # Message drawing code (same as before)
         try:
             msg_font = pygame.font.SysFont('Comic Sans MS', 38, bold=True)
         except:
@@ -486,10 +567,9 @@ class Game:
                 msg_font = pygame.font.SysFont('Comic Sans MS', 32, bold=True)
             except:
                 msg_font = pygame.font.Font(None, 38)
-          # Draw Messages
+        
         if self.message:
             font = pygame.font.SysFont('Comic Sans MS', 48, bold=True)
-            # Add shadow
             shadow_text = font.render(self.message, True, (0, 0, 0))
             shadow_rect = shadow_text.get_rect(center=(SCREEN_WIDTH // 2 + 2, 72))
             self.screen.blit(shadow_text, shadow_rect)
@@ -498,16 +578,13 @@ class Game:
             text_rect = text_surface.get_rect(center=(SCREEN_WIDTH // 2, 70))
             self.screen.blit(text_surface, text_rect)
             
-        # Draw Level Image using image_key
         if self.current_level_config and "image_key" in self.current_level_config:
             key = self.current_level_config["image_key"]
             if key in self.level_images:
                 img = self.level_images[key]
-                # Use the randomized position set in setup_level
                 img_rect = img.get_rect(center=self.current_image_pos)
                 self.screen.blit(img, img_rect)
         
-        # Instructions
         try:
             inst_font = pygame.font.SysFont('Arial', 18, italic=True)
         except:
@@ -516,15 +593,12 @@ class Game:
         if not self.arm.held_wagon:
              inst_text = "Nivel " + str(self.current_level_index + 1) + "/" + str(len(LEVELS))
         else:
-             next_pos = self.current_position + 1
              inst_text = f"Plasare litera..."
              
-        # Draw instruction text (simplified for brevity)
         inst_surf = inst_font.render(inst_text, True, (50, 50, 50))
         inst_rect = inst_surf.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 25))
         self.screen.blit(inst_surf, inst_rect)
         
-        # Slot numbers
         try:
             num_font = pygame.font.SysFont('Arial', 36, bold=True)
         except:
@@ -533,13 +607,11 @@ class Game:
         for i, slot in enumerate(self.slot_list):
             slot.set_current(i == self.current_position)
             
-            # Logic for coloring logic is improved
             num_text = ""
             bg_color = None
             text_color = WHITE
             
             if i in self.current_level_config["pre_filled"]:
-                 # Pre filled - no number needed really, or grey
                  pass
             elif i < self.current_position:
                  num_text = str(i + 1)
@@ -553,12 +625,11 @@ class Game:
                  text_color = (100, 100, 100)
             
             if num_text:
-                # Draw circle background
                 center_x = slot.rect.centerx
                 center_y = slot.rect.top - 25
                 
                 if bg_color == WHITE:
-                    pygame.draw.circle(self.screen, (200, 200, 200), (center_x, center_y), 18) # Border
+                    pygame.draw.circle(self.screen, (200, 200, 200), (center_x, center_y), 18)
                     pygame.draw.circle(self.screen, bg_color, (center_x, center_y), 16)
                 else:
                     pygame.draw.circle(self.screen, bg_color, (center_x, center_y), 18)
@@ -566,14 +637,27 @@ class Game:
                 num_surf = num_font.render(num_text, True, text_color)
                 num_rect = num_surf.get_rect(center=(center_x, center_y))
                 self.screen.blit(num_surf, num_rect)
-        
-        pygame.display.flip()
 
-    def run(self):
-        while self.running:
-            self.handle_events()
-            self.draw()
-            self.clock.tick(FPS)
+    def draw_multiline_text(self, text, x, y, max_width, font, color=(0,0,0)):
+        words = text.split(' ')
+        lines = []
+        current_line = []
+        
+        for word in words:
+            current_line.append(word)
+            text_surf = font.render(' '.join(current_line), True, color)
+            if text_surf.get_width() > max_width:
+                current_line.pop()
+                lines.append(' '.join(current_line))
+                current_line = [word]
+        
+        if current_line:
+            lines.append(' '.join(current_line))
+            
+        for i, line in enumerate(lines):
+            text_surf = font.render(line, True, color)
+            rect = text_surf.get_rect(center=(x, y + i * 40))
+            self.screen.blit(text_surf, rect)
 
 def get_level_description(config):
     if config["spawn_mode"] == "raining":
